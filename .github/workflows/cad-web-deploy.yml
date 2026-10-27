@@ -1,0 +1,116 @@
+# Builds the browser version from the `cad-web` branch (cad-native's CADCraft-native format and DWG
+# work, built for the web) and publishes it to GitHub Pages. Runs only in withshalom/cadcraft-cad. Before publishing it opens
+# real DWG drawings (the MI-201 corpus, cloned from withshalom/CAD at run time, never committed
+# here) in the built page, in a headless browser, and pushes the pictures and the browser console
+# to this repo's `previews` branch: the proof that the web build reads DWG.
+name: cad-web-deploy
+
+on:
+  push:
+    branches: [cad-web]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CUSTOM_DOMAIN: cad.cadcraft.dev
+
+jobs:
+  build:
+    if: github.repository == 'withshalom/cadcraft-cad'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) with the wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Build (release)
+        working-directory: apps/cadcraft-web
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! trunk build --release 2>&1 | tee "$RUNNER_TEMP/build.log"; then
+            # The step log needs a sign-in to read; echo the first compiler errors as an annotation.
+            msg=$(sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/build.log" | grep -E -A14 -m4 '^error(\[E[0-9]+\])?: ' | head -c 3500 | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Build failed::${msg}"
+            exit 1
+          fi
+
+      - name: Check the site uses relative URLs
+        run: |
+          test -f dist/web/index.html
+          if grep -Eq '(src|href)="/[^/]' dist/web/index.html; then
+            echo "index.html has root-absolute URLs" >&2
+            exit 1
+          fi
+
+      - name: Open real DWG drawings in the built page (headless browser)
+        continue-on-error: true
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/withshalom/CAD "$RUNNER_TEMP/corpus"
+          export DWG_FILES=$(find "$RUNNER_TEMP/corpus/corpus/mosaiciron-mi201" \( -name 'mi201-r2007.dwg' -o -name 'mi201-r2013.dwg' -o -name 'mi201-r2018.dwg' \) | sort)
+          echo "DWG files: $DWG_FILES"
+          mkdir -p "$RUNNER_TEMP/shots" && cd "$RUNNER_TEMP/shots"
+          cp "$GITHUB_WORKSPACE/.github/scripts/dwg-open.mjs" .
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.49.1 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+          node dwg-open.mjs "$GITHUB_WORKSPACE/dist/web" "$RUNNER_TEMP/shots/out"
+
+      - name: Publish the screenshots to the previews branch
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$RUNNER_TEMP/shots/out"
+          msg=$(head -c 3500 logs.txt | sed 's/%/%25/g;s/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::notice title=Browser console::${msg}"
+          git init -q
+          git checkout -q -b previews
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Screenshots for ${GITHUB_SHA}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" previews
+
+      - name: Add Pages files
+        run: |
+          touch dist/web/.nojekyll
+          echo "$CUSTOM_DOMAIN" > dist/web/CNAME
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web
+
+  deploy:
+    if: github.repository == 'withshalom/cadcraft-cad'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
