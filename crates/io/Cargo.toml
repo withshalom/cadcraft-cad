@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 miniz_oxide = "0.9"
+craft-pdf = { workspace = true, features = ["write"] }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
@@ -29,3 +30,5 @@ acadrust = "0.6.5"
 # the open engine's reader, for counting what a DWG holds before and after a round trip (tests/it/dwg_corpus.rs).
 cad-dwg = { workspace = true }
 tiny-skia = { workspace = true }
+# Reads plotted PDFs back.
+craft-pdf = { workspace = true, features = ["read"] }

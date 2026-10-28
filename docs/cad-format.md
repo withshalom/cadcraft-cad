@@ -1,4 +1,4 @@
-# CADCraft's native format (`.cad`) — records 1.2
+# CADCraft's native format (`.cad`) — records 1.3
 
 > **Status:** draft, first version (branch `cad-native`) · **Lock file:** `.cdl` · **Code:**
 > `crates/io/src/cad_file/` (format), `crates/engine/src/cmd/file/lock.rs` (lock)
@@ -121,7 +121,7 @@ names are skipped with their value.
 
 | Name | Value |
 |---|---|
-| `$CADCRAFT_FORMAT` | `1` STR, the records version: `"1.2"` |
+| `$CADCRAFT_FORMAT` | `1` STR, the records version: `"1.3"` |
 | `$CAD_WRITER` | `1` STR, e.g. `"CADCraft 0.10.0"` |
 | `$CAD_OBJECTS` | `160` I64, records in the `Objects` sections (a check value) |
 | `$CAD_PAGES` | `160` I64, number of `Objects.N` sections |
@@ -245,6 +245,7 @@ the drawing).
 | entities of that layout | in draw order | envelope `5` and `410` |
 | entities of model space | in draw order | envelope `5` |
 | `FOREIGN_CLASS`, `FOREIGN_OBJECT`, `FOREIGN_DICTIONARY`, `FOREIGN_EXTRA`, `FOREIGN_RECORD_EXTRA`, `FOREIGN_TARGET`, `FOREIGN_DATASTORE` | kept foreign data | its DXF groups as raw groups (§5), handles as HANDLE |
+| `FOREIGN_CLASS_ORDER` (records 1.3) | the file's class names in its CLASSES order, when it has proxy objects or entities | `names`: a proxy's class number (group 91) is 500 plus its class's place here, and saving renumbers it to the written CLASSES |
 | `FOREIGN_HANDLE` (records 1.1) | the handle a role had in the file read: a table, a record, a block's BLOCK or ENDBLK, the named object dictionary and its entries | `handle`, `table` (the role's kind), `name` |
 
 An entity record's kind is its DXF type name (`LINE`, `LWPOLYLINE`, `ACAD_TABLE`…), for people
@@ -341,6 +342,7 @@ open, on which machine, in which program, since when, and a heartbeat.
 
 | Date | Change |
 |---|---|
+| 2026-10-28 | Records 1.3: `FOREIGN_CLASS_ORDER`, the class order a kept proxy is renumbered by (upstream #1812); without it a proxy in a drawing saved as `.cad` was dropped on the next DXF or DWG save |
 | 2026-10-22 | Records 1.0: the model map, the format, notes, and the `.cdl` lock |
 | 2026-10-23 | Records 1.2: plot settings and layout data, viewport settings, multileader and table style fields, dimension link snap data and flips travel in their records' fields; `APPID` and `MODEL_LAYOUT` records |
 | 2026-10-23 | Records 1.1: header variables keep their DXF group codes (`2001` tag); tables, blocks, layouts and styles keep their handles (`handle` fields, `FOREIGN_HANDLE` records) |
