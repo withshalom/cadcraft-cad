@@ -310,6 +310,7 @@ fn kept_foreign_data_round_trips() {
         props: tags(&[(347, "60")]),
     };
     let f = Foreign {
+        class_order: Default::default(),
         handles: Default::default(),
         classes: vec![tags(&[(1, "ACME_WIDGET"), (2, "AcmeWidget"), (90, "1025")])],
         objects: vec![ForeignObject { handle: Handle(0x50), kind: "XRECORD".into(), tags: tags(&[(100, "AcDbXrecord"), (280, "1"), (1, "kept")]) }],
