@@ -26,12 +26,12 @@ use self::node::{Node, from_node, to_node};
 use crate::{IoError, Result};
 
 /// The version of CADCraft's records this code writes (docs/cad-format.md §3.1).
-pub const FORMAT: &str = "1.2";
+pub const FORMAT: &str = "1.3";
 /// In the `Header` section, after a variable's value: the DXF group code it was read with
 /// (records 1.1).
 const HEADER_CODE: u16 = 2001;
 const MAJOR: u32 = 1;
-const MINOR: u32 = 2;
+const MINOR: u32 = 3;
 /// Target size of one `Objects.N` page; a record is never split across pages.
 const PAGE_TARGET: usize = 64 * 1024;
 /// Previews larger than this are left out, so a preview never outweighs the drawing (a hatched
@@ -103,6 +103,13 @@ struct FRecordExtra {
     table: String,
     name: String,
     extra: FExtra,
+}
+
+/// The file's class names in its CLASSES order, by which a kept proxy is renumbered on save
+/// (records 1.3).
+#[derive(Serialize, Deserialize)]
+struct FClassOrder {
+    names: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -295,6 +302,9 @@ fn write_foreign(out: &mut Out, f: &Foreign) -> Result<()> {
     for ((table, name), h) in &f.handles {
         out.record("FOREIGN_HANDLE", None, &FTarget { handle: *h, table: table.clone(), name: name.clone() })?;
     }
+    if !f.class_order.is_empty() {
+        out.record("FOREIGN_CLASS_ORDER", None, &FClassOrder { names: f.class_order.clone() })?;
+    }
     Ok(())
 }
 
@@ -435,6 +445,7 @@ impl Parts {
                 let t: FTarget = obj(b)?;
                 self.foreign.handles.insert((t.table, t.name), t.handle);
             }
+            "FOREIGN_CLASS_ORDER" => self.foreign.class_order = obj::<FClassOrder>(b)?.names,
             other => return Err(format!("a record of kind {other} this version doesn't know, left out")),
         }
         Ok(())
