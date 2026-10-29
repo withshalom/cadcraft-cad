@@ -99,7 +99,8 @@ mod tests {
         assert!(Format::WRITE.contains(&Format::Dwt) && !Format::READ.contains(&Format::Dwt));
         assert!(Format::WRITE.iter().filter(|f| f.is_image()).count() == 3 && !Format::Svgz.is_image());
         assert!(Format::Dwt.drops_unknown() && Format::Dwg.drops_unknown() && !Format::Dxf.drops_unknown());
-        assert!(Format::Dwt.is_drawing() && !Format::Pdf.is_drawing());
-        assert_eq!(Format::list(Format::READ), "dxf, dwg, svg, svgz");
+        assert!(Format::Dwt.is_drawing() && Format::Cad.is_drawing() && !Format::Pdf.is_drawing());
+        assert!(Format::READ.contains(&Format::Cad) && Format::WRITE.contains(&Format::Cad) && !Format::Cad.drops_unknown());
+        assert_eq!(Format::list(Format::READ), "dxf, dwg, cad, svg, svgz");
     }
 }
