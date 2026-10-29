@@ -1,5 +1,5 @@
 //! The rest of the fields of the drawing's records (docs/cadcraft-doc.md §4) survive saving and
-//! reopening in DXF and in `.cad`: a layout's plot settings and layout data, a model space
+//! reopening in DXF (and a second save) and in `.cad`: a layout's plot settings and layout data, a model space
 //! viewport's view settings, a multileader style's and a table style's fields, a dimension link's
 //! snap data, a dimension's arrowhead flips and the registered applications.
 
@@ -12,6 +12,11 @@ fn dxf(d: &Drawing) -> String {
     let mut d = d.clone();
     d.header.set_str("ACADVER", Version::R2018.code());
     String::from_utf8(cadcraft_io::write(&d, "x.dxf").unwrap()).unwrap()
+}
+
+/// Saved, reopened, saved again and reopened again.
+fn resaved(d: &Drawing) -> Drawing {
+    read_dxf(dxf(&read_dxf(dxf(d).as_bytes()).unwrap()).as_bytes()).unwrap()
 }
 
 fn cad(d: &Drawing) -> Drawing {
@@ -86,7 +91,7 @@ fn plotted() -> Drawing {
 fn plot_settings_and_layout_data_round_trip() {
     let d = plotted();
     let text = dxf(&d);
-    for back in [read_dxf(text.as_bytes()).unwrap(), cad(&d)] {
+    for back in [read_dxf(text.as_bytes()).unwrap(), resaved(&d), cad(&d)] {
         let l = back.layouts.first().unwrap();
         assert_eq!(l.page.settings, d.layouts[0].page.settings);
         assert_eq!(l.record, d.layouts[0].record);
@@ -203,7 +208,7 @@ fn viewport_settings_round_trip() {
     // And a lone *Active tile keeps its settings across a save.
     d.active_vport = Some(Box::new(tile(Vec2::ZERO, Vec2::new(1.0, 1.0), &settings)));
     let text = dxf(&d);
-    for back in [read_dxf(text.as_bytes()).unwrap(), cad(&d)] {
+    for back in [read_dxf(text.as_bytes()).unwrap(), resaved(&d), cad(&d)] {
         let two = back.vports.iter().find(|c| c.name == "Two").expect("saved configuration");
         assert_eq!(two.tiles.first().map(|t| &t.settings), Some(&settings));
         assert_eq!(two.tiles.get(1).map(|t| &t.settings), Some(&VportSettings::default()));
@@ -275,7 +280,7 @@ fn multileader_and_table_style_fields_round_trip() {
     d.table_styles.retain(|s| !s.name.eq_ignore_ascii_case("Schedule"));
     d.table_styles.push(ts);
     let text = dxf(&d);
-    for back in [read_dxf(text.as_bytes()).unwrap(), cad(&d)] {
+    for back in [read_dxf(text.as_bytes()).unwrap(), resaved(&d), cad(&d)] {
         let m = back.mleader_styles.iter().find(|s| s.name == "Callouts").expect("mleader style");
         let want = d.mleader_styles.iter().find(|s| s.name == "Callouts").unwrap();
         assert_eq!(m.props, want.props);
@@ -346,6 +351,8 @@ fn dimension_links_keep_their_snap_data_until_they_change() {
     let back = read_dxf(dxf(&d1).as_bytes()).unwrap();
     let dm = back.model.iter().find_map(|e| if let EntityKind::Dimension(x) = &e.kind { Some(x.clone()) } else { None }).unwrap();
     assert_eq!((dm.flip_arrows, dm.flag_73), ([true, false], true));
+    let dm = resaved(&d1).model.iter().find_map(|e| if let EntityKind::Dimension(x) = &e.kind { Some(x.clone()) } else { None }).unwrap();
+    assert_eq!((dm.flip_arrows, dm.flag_73), ([true, false], true));
     let dm = cad(&d1).model.iter().find_map(|e| if let EntityKind::Dimension(x) = &e.kind { Some(x.clone()) } else { None }).unwrap();
     assert_eq!((dm.flip_arrows, dm.flag_73), ([true, false], true));
 }
@@ -372,6 +379,13 @@ fn registered_applications_keep_their_case_and_flags() {
     for a in &d.appids {
         let got = back.appids.iter().find(|x| x.name == a.name).unwrap_or_else(|| panic!("{} comes back", a.name));
         assert_eq!(got.flags, a.flags);
+    }
+    // Saved a second time, each one is still there once, with its flags.
+    let again = resaved(&d);
+    for a in &d.appids {
+        let same: Vec<_> = again.appids.iter().filter(|x| x.name.eq_ignore_ascii_case(&a.name)).collect();
+        assert_eq!(same.len(), 1, "{} once", a.name);
+        assert_eq!((same[0].name.as_str(), same[0].flags), (a.name.as_str(), a.flags));
     }
     for a in &cad(&d).appids {
         assert!(d.appids.iter().any(|x| x.name == a.name));

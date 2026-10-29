@@ -328,24 +328,11 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
     let get = |name: &str| secs.iter().find(|s| s.name == name).map(|s| split(&s.tags)).unwrap_or_default();
     let (classes, tables, blocks, entities, objects) = (get("CLASSES"), get("TABLES"), get("BLOCKS"), get("ENTITIES"), get("OBJECTS"));
     // The drawing's entities by handle: whether each is of a type CADCraft doesn't model.
-    let mut ents: HashMap<String, bool> = HashMap::new();
-    for e in all_entities(d) {
-        ents.entry(e.handle.hex()).or_insert(matches!(e.kind, EntityKind::Unknown(_)));
-    }
+    let ents = entity_types(d);
     let ids = identities(&tables, &blocks, &objects);
     // Extension dictionaries of entities, records and the objects CADCraft writes itself (those
     // with a role, such as a table style): owner → dictionary.
-    let mut xdict_of: HashMap<String, String> = HashMap::new();
-    let role_objects = objects.iter().filter(|(_, _, t)| head(t).handle.is_some_and(|h| ids.contains_key(&h)));
-    for (kind, _, t) in tables.iter().chain(&blocks).chain(&entities).chain(role_objects) {
-        if kind == "ENDBLK" {
-            continue;
-        }
-        let h = head(t);
-        if let (Some(o), Some(x)) = (h.handle, h.xdict) {
-            xdict_of.entry(o).or_insert(x);
-        }
-    }
+    let xdict_of = extension_dictionaries(&tables, &blocks, &entities, &objects, &ids);
     // Objects by handle: the first of each, and none that has an entity's handle.
     let mut by_handle: HashMap<String, usize> = HashMap::new();
     for (i, (_, _, t)) in objects.iter().enumerate() {
@@ -363,78 +350,9 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
         let (Some(h), Some(o)) = (hd.handle, hd.owner) else { return false };
         (!by_handle.contains_key(&o) || ids.contains_key(&o)) && xdict_of.get(&o) == Some(&h) && (ents.contains_key(&o) || ids.contains_key(&o))
     };
-    let modelled_entry = |t: &[Tag], h: &str| entries(t).iter().any(|(k, eh)| eh == h && MODELLED_XDICT_KEYS.contains(&up(k).as_str()));
-    // Which objects to keep: those under a named object dictionary entry CADCraft doesn't model,
-    // under the extension dictionary of an entity or record (minus modelled entries; one left
-    // empty goes), or owned by an entity of a type CADCraft doesn't model. Memoized along each
-    // ownership chain; cycles and over-long chains are not kept.
-    let mut memo: HashMap<usize, bool> = HashMap::new();
-    for i in 0..objects.len() {
-        let mut path: Vec<usize> = Vec::new();
-        let mut cur = i;
-        let verdict = loop {
-            if let Some(&v) = memo.get(&cur) {
-                break v;
-            }
-            if path.contains(&cur) || path.len() >= MAX_DEPTH {
-                break false;
-            }
-            path.push(cur);
-            let Some((_, _, t)) = objects.get(cur) else { break false };
-            let hd = head(t);
-            let (Some(h), Some(o)) = (hd.handle, hd.owner) else { break false };
-            if by_handle.get(&h) != Some(&cur) {
-                break false;
-            }
-            if Some(&o) == root.as_ref() {
-                break root_key(&h).is_some_and(|k| !modelled_key(&k));
-            }
-            // The extension dictionary of an object CADCraft writes itself (a table style's).
-            if ids.contains_key(&o) && by_handle.contains_key(&o) && is_xdict(cur) {
-                break entries(t).iter().any(|(k, _)| !MODELLED_XDICT_KEYS.contains(&up(k).as_str()));
-            }
-            if let Some(&j) = by_handle.get(&o) {
-                if is_xdict(j) && objects.get(j).is_some_and(|p| modelled_entry(p.2, &h)) {
-                    break false;
-                }
-                cur = j;
-                continue;
-            }
-            if is_xdict(cur) {
-                break entries(t).iter().any(|(k, _)| !MODELLED_XDICT_KEYS.contains(&up(k).as_str()));
-            }
-            break ents.get(&o) == Some(&true);
-        };
-        for p in path {
-            memo.insert(p, verdict);
-        }
-    }
+    let memo = retained_objects(&objects, &ents, &ids, &by_handle, root.as_deref(), &root_entries, &xdict_of);
     let mut f = Foreign::default();
-    // The handle of every role (docs/cadcraft-doc.md, S1); the lowest when two records share one.
-    for (h, k) in &ids {
-        if let Some(hh) = handle(h)
-            && f.handles.len() < MAX_OBJECTS
-        {
-            f.handles.entry(k.clone()).and_modify(|x| *x = (*x).min(hh)).or_insert(hh);
-        }
-    }
-    // Extension dictionaries of entities and records, and the DIMASSOC objects in them, which
-    // CADCraft writes itself for dimensions: by the owner's handle (S1).
-    let owner_of_xdict: HashMap<&String, &String> = xdict_of.iter().map(|(o, x)| (x, o)).collect();
-    for (o, x) in &xdict_of {
-        if let (Some(oh), Some(xh)) = (handle(o), handle(x)) {
-            f.handles.entry(("XDICT".into(), oh.hex())).or_insert(xh);
-        }
-    }
-    for (kind, _, t) in &objects {
-        let hd = head(t);
-        if kind == "DIMASSOC"
-            && let (Some(h), Some(x)) = (hd.handle.as_deref().and_then(handle), hd.owner.as_ref())
-            && let Some(dim) = owner_of_xdict.get(x).and_then(|o| handle(o))
-        {
-            f.handles.entry(("DIMASSOC".into(), dim.hex())).or_insert(h);
-        }
-    }
+    kept_role_handles(&mut f, &ids, &xdict_of, &objects);
     let mut kept: HashSet<String> = HashSet::new();
     for (i, (kind, _, t)) in objects.iter().enumerate() {
         if memo.get(&i) != Some(&true) || f.objects.len() >= MAX_OBJECTS {
@@ -480,18 +398,7 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
             f.records.entry(key).or_insert(x);
         }
     }
-    // Extras of the objects CADCraft writes itself (a table style's extension dictionary…).
-    for (kind, _, t) in &objects {
-        let Some(h) = head(t).handle else { continue };
-        if kept.contains(&h) || is_dictionary(kind) {
-            continue;
-        }
-        let Some(key) = ids.get(&h).cloned() else { continue };
-        let x = extra(kind, t, false, false, &kept);
-        if !x.is_empty() {
-            f.records.entry(key).or_insert(x);
-        }
-    }
+    role_object_extras(&mut f, &objects, &ids, &kept);
     // The classes of kept objects and of entities of types CADCraft doesn't model.
     let mut types: HashSet<String> = f.objects.iter().map(|o| up(&o.kind)).collect();
     types.extend(all_entities(d).filter_map(|e| match &e.kind {
@@ -552,6 +459,164 @@ pub(crate) fn read(secs: &[Section], d: &mut Drawing) {
     if !f.is_empty() {
         d.foreign = Arc::new(f);
     }
+}
+
+fn entity_types(drawing: &Drawing) -> HashMap<String, bool> {
+    let mut types = HashMap::new();
+    for entity in all_entities(drawing) {
+        types.entry(entity.handle.hex()).or_insert(matches!(entity.kind, EntityKind::Unknown(_)));
+    }
+    types
+}
+
+fn extension_dictionaries(
+    tables: &[(String, usize, &[Tag])],
+    blocks: &[(String, usize, &[Tag])],
+    entities: &[(String, usize, &[Tag])],
+    objects: &[(String, usize, &[Tag])],
+    ids: &HashMap<String, ForeignKey>,
+) -> HashMap<String, String> {
+    let mut dictionaries = HashMap::new();
+    let role_objects = objects.iter().filter(|(_, _, tags)| head(tags).handle.is_some_and(|h| ids.contains_key(&h)));
+    for (kind, _, tags) in tables.iter().chain(blocks).chain(entities).chain(role_objects) {
+        if kind == "ENDBLK" {
+            continue;
+        }
+        let header = head(tags);
+        if let (Some(owner), Some(dictionary)) = (header.handle, header.xdict) {
+            dictionaries.entry(owner).or_insert(dictionary);
+        }
+    }
+    dictionaries
+}
+
+/// The handle each role had in the file (S1): every table record, block and object with a role
+/// (the lowest when two records share one), the extension dictionary of each entity or record,
+/// and the DIMASSOC objects in them, which CADCraft writes itself for dimensions.
+fn kept_role_handles(f: &mut Foreign, ids: &HashMap<String, ForeignKey>, xdict_of: &HashMap<String, String>, objects: &[(String, usize, &[Tag])]) {
+    for (h, k) in ids {
+        if let Some(hh) = handle(h)
+            && f.handles.len() < MAX_OBJECTS
+        {
+            f.handles.entry(k.clone()).and_modify(|x| *x = (*x).min(hh)).or_insert(hh);
+        }
+    }
+    let owner_of_xdict: HashMap<&String, &String> = xdict_of.iter().map(|(o, x)| (x, o)).collect();
+    for (o, x) in xdict_of {
+        if let (Some(oh), Some(xh)) = (handle(o), handle(x)) {
+            f.handles.entry(("XDICT".into(), oh.hex())).or_insert(xh);
+        }
+    }
+    for (kind, _, t) in objects {
+        let hd = head(t);
+        if kind == "DIMASSOC"
+            && let (Some(h), Some(x)) = (hd.handle.as_deref().and_then(handle), hd.owner.as_ref())
+            && let Some(dim) = owner_of_xdict.get(x).and_then(|o| handle(o))
+        {
+            f.handles.entry(("DIMASSOC".into(), dim.hex())).or_insert(h);
+        }
+    }
+}
+
+/// Extras of the objects CADCraft writes itself (a table style's extension dictionary…), by role.
+fn role_object_extras(f: &mut Foreign, objects: &[(String, usize, &[Tag])], ids: &HashMap<String, ForeignKey>, kept: &HashSet<String>) {
+    for (kind, _, t) in objects {
+        let Some(h) = head(t).handle else { continue };
+        if kept.contains(&h) || is_dictionary(kind) {
+            continue;
+        }
+        let Some(key) = ids.get(&h).cloned() else { continue };
+        let x = extra(kind, t, false, false, kept);
+        if !x.is_empty() {
+            f.records.entry(key).or_insert(x);
+        }
+    }
+}
+
+/// The handle each written kept object gets: its own, unless the written file already uses it;
+/// then a new one from `next` on, above every written handle and the seed.
+fn kept_object_handles(f: &Foreign, alive_memo: &HashMap<String, bool>, written: &HashSet<String>, mut next: u64) -> HashMap<String, String> {
+    let mut alive: HashMap<String, String> = HashMap::new();
+    let mut taken: HashSet<String> = written.clone();
+    for o in f.objects.iter().filter(|o| alive_memo.get(&o.handle.hex()) == Some(&true)) {
+        let own = o.handle.hex();
+        if !o.handle.is_none() && taken.insert(own.clone()) {
+            alive.insert(own.clone(), own);
+            continue;
+        }
+        next = free_handle(&taken, next);
+        let new = format!("{next:X}");
+        taken.insert(new.clone());
+        alive.insert(own, new);
+        next = next.saturating_add(1);
+    }
+    alive
+}
+
+/// Determine which objects belong to unmodelled dictionary entries or owners.
+fn retained_objects(
+    objects: &[(String, usize, &[Tag])],
+    entities: &HashMap<String, bool>,
+    records: &HashMap<String, ForeignKey>,
+    by_handle: &HashMap<String, usize>,
+    root: Option<&str>,
+    root_entries: &[(String, String)],
+    xdict_of: &HashMap<String, String>,
+) -> HashMap<usize, bool> {
+    let root_key = |handle: &str| root_entries.iter().find(|(_, entry_handle)| entry_handle == handle).map(|(key, _)| key);
+    let is_xdict = |index: usize| {
+        let Some((_, _, tags)) = objects.get(index) else { return false };
+        let header = head(tags);
+        let (Some(handle), Some(owner)) = (header.handle, header.owner) else { return false };
+        (!by_handle.contains_key(&owner) || records.contains_key(&owner))
+            && xdict_of.get(&owner) == Some(&handle)
+            && (entities.contains_key(&owner) || records.contains_key(&owner))
+    };
+    let modelled_entry = |tags: &[Tag], handle: &str| {
+        entries(tags).iter().any(|(key, entry_handle)| entry_handle == handle && MODELLED_XDICT_KEYS.contains(&up(key).as_str()))
+    };
+    let mut retained = HashMap::new();
+    for index in 0..objects.len() {
+        let mut path = Vec::new();
+        let mut current = index;
+        let keep = loop {
+            if let Some(&known) = retained.get(&current) {
+                break known;
+            }
+            if path.contains(&current) || path.len() >= MAX_DEPTH {
+                break false;
+            }
+            path.push(current);
+            let Some((_, _, tags)) = objects.get(current) else { break false };
+            let header = head(tags);
+            let (Some(handle), Some(owner)) = (header.handle, header.owner) else { break false };
+            if by_handle.get(&handle) != Some(&current) {
+                break false;
+            }
+            if root == Some(owner.as_str()) {
+                break root_key(&handle).is_some_and(|key| !modelled_key(key));
+            }
+            // The extension dictionary of an object CADCraft writes itself (a table style's).
+            if records.contains_key(&owner) && by_handle.contains_key(&owner) && is_xdict(current) {
+                break entries(tags).iter().any(|(key, _)| !MODELLED_XDICT_KEYS.contains(&up(key).as_str()));
+            }
+            if let Some(&parent) = by_handle.get(&owner) {
+                if is_xdict(parent) && objects.get(parent).is_some_and(|object| modelled_entry(object.2, &handle)) {
+                    break false;
+                }
+                current = parent;
+                continue;
+            }
+            if is_xdict(current) {
+                break entries(tags).iter().any(|(key, _)| !MODELLED_XDICT_KEYS.contains(&up(key).as_str()));
+            }
+            break entities.get(&owner) == Some(&true);
+        };
+        for visited in path {
+            retained.insert(visited, keep);
+        }
+    }
+    retained
 }
 
 /// Proxy records (DXF Reference, ACAD_PROXY_OBJECT and ACAD_PROXY_ENTITY): another application's
@@ -975,23 +1040,7 @@ pub(crate) fn finish(tags: &mut Vec<Tag>, d: &Drawing) {
             alive_memo.insert(p, verdict);
         }
     }
-    // Written kept objects keep their own handles (docs/cadcraft-doc.md, S1); one already taken in
-    // the written file gets a new handle, above every written handle and the seed.
-    let mut next = seed(tags).max(max_handle(tags).saturating_add(1));
-    let mut alive: HashMap<String, String> = HashMap::new();
-    let mut taken: HashSet<String> = written.clone();
-    for o in f.objects.iter().filter(|o| alive_memo.get(&o.handle.hex()) == Some(&true)) {
-        let own = o.handle.hex();
-        if !o.handle.is_none() && taken.insert(own.clone()) {
-            alive.insert(own.clone(), own);
-            continue;
-        }
-        next = free_handle(&taken, next);
-        let new = format!("{next:X}");
-        taken.insert(new.clone());
-        alive.insert(own, new);
-        next = next.saturating_add(1);
-    }
+    let alive = kept_object_handles(f, &alive_memo, &written, seed(tags).max(max_handle(tags).saturating_add(1)));
     let entities: HashSet<String> = all_entities(d).map(|e| e.handle.hex()).filter(|h| written.contains(h)).collect();
     let map = Map { f, alive, raw: objs.keys().cloned().collect(), roles, entities };
     let mut out: Vec<Tag> = Vec::with_capacity(tags.len() + f.objects.iter().map(|o| o.tags.len() + 1).sum::<usize>());

@@ -1,6 +1,6 @@
 # File-format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (CADCraft's native `.cad` and its `.cdl` lock, branch `cad-native`) · **Target:** Autodesk AutoCAD 2027
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (LAYOUT SAveas writes a layout as a DWT template) · **Target:** Autodesk AutoCAD 2027
 
 Every format AutoCAD 2027 reads or writes, with CADCraft's support, fidelity and tests. Work
 items are in [gaps.md](gaps.md#file-formats); the weighted score feeds
@@ -134,7 +134,7 @@ on read with a note, so such files no longer exceed the DXF limit (#1482). **DWG
 
 | Format | AutoCAD 2027 | CADCraft | Hours to parity (est.) |
 |---|---|---|---|
-| DWT templates | open, save | NEW/QNEW from `.dwt` and `.dxf` templates, SAVEAS `.dwt` (#552) | 0–1 |
+| DWT templates | open, save | NEW/QNEW from `.dwt` and `.dxf` templates, SAVEAS `.dwt` (#552); LAYOUT SAveas writes one layout and the named objects it uses as a `.dwt` (`layout.saveas`) | 0–1 |
 | CADCraft `.cad` (CADCraft's native format; not an AutoCAD format) | — | open and save (branch `cad-native`): the drawing exactly as CADCraft's model holds it, every entity type, table and setting, reals bit for bit, with what files held that CADCraft doesn't model kept; in the container of WithShalom's open `cad-native` crate, marked as CADCraft's; an SVG preview of model space (up to 1 MiB). While open, a `.cdl` lock beside it says who has it; a drawing someone else has open opens read-only. Format: [cad-format.md](cad-format.md); tests: `cad_file::tests` (every entity kind, foreign data, the example drawings and the MI-201 corpus open → `.cad` → open unchanged, damaged files), `crates/engine/tests/cad_lock.rs` | — |
 | DWS standards | open, save, CHECKSTANDARDS | no | 6–10 |
 | PDF output (PLOT, EXPORTPDF) | multi-sheet, layers, searchable text, hyperlinks | vector PDF with lineweights, real text in embedded TrueType subsets, layers (OCG), several sheets per file and hyperlinks (#567, #571); object transparency as PDF alpha when "Plot transparency" is on (the option isn't saved in DXF/DWG: no public plot layout flag) | 1–2 |
@@ -173,7 +173,10 @@ DWG's objects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | LAYOUT SAveas (`layout.saveas`) writes a layout as a drawing template: its page setup and paper space objects, no model space objects or other layouts, and only the named objects they use |
 | 2026-10-23 | minor | Branch `cad-native`: a second native format (`.blc`) is no longer opened or saved; CADCraft's `.cad` is the one native format, and the model it is built on is `cadcraft-doc` (docs/cadcraft-doc.md) |
+| 2026-10-23 | minor | DXF save keeps what it read: tables, blocks, layouts, dictionaries and styles keep their handles; every header variable is written back with its group codes; the dictionary tree and entity reactors survive; plot settings, layout data, viewport settings, multileader and table style fields, DIMASSOC snap data, dimension arrowhead flips (73–75) and the APPID table are modelled. An AutoCAD 2018 DXF saved again keeps 183 of 194 records unchanged (was 124), all 253 header variables (was 107) and every handle (tests: `kept_handles`, `header_kept_vars`, `kept_structure`, `field_roundtrip`, `record_fields`) |
+| 2026-10-22 | minor | Branch `dwg-fidelity`: a real-file DWG round-trip test on the MI-201 corpus; WithShalom's open DWG crates named neutrally |
 | 2026-10-22 | minor | Branch `cad-native`: CADCraft's native `.cad` (records 1.0, docs/cad-format.md) opens and saves the drawing exactly; the `.cdl` lock beside an open `.cad` drawing, read-only when someone else has it open |
 | 2026-10-22 | minor | Branch `dwg-fidelity` (then `dwg-native`): a native file opens and saves through WithShalom's open `cad-native` crate; a real-file DWG round-trip test on the MI-201 corpus |
 | 2026-10-22 | minor | Branch `dwg-fidelity`: the `cad-*` crates 0.17.0 |
