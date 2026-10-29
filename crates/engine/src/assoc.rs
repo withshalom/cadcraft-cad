@@ -263,6 +263,15 @@ pub fn recompute(dm: &Dimension, prev: Option<&Dimension>, before: &Drawing, aft
         }
         snap_point(after, a).is_some()
     });
+    // The file's point reference (snap type, subentity, GS marker, parameter) described the object
+    // as it was read; once the object, or the other object of an intersection, changes, the
+    // reference is recomputed from CADCraft's link when the drawing is written.
+    for a in &mut nd.assoc {
+        let other_changed = matches!(a.snap, AssocSnap::Intersection { other } if src_changed(before, after, other));
+        if src_changed(before, after, a.handle) || other_changed {
+            a.read = Default::default();
+        }
+    }
     for a in &nd.assoc {
         if let (Some(p), Some(old)) = (snap_point(after, a), def_point(dm, &a.point)) {
             deltas.push(p - old.xy());
@@ -302,6 +311,11 @@ pub fn recompute(dm: &Dimension, prev: Option<&Dimension>, before: &Drawing, aft
     nd
 }
 
+/// Whether `nd` lost a file point reference `dm` still had (same attachments, by position).
+fn read_dropped(dm: &Dimension, nd: &Dimension) -> bool {
+    dm.assoc.iter().zip(&nd.assoc).any(|(a, b)| !a.read.is_none() && b.read.is_none())
+}
+
 /// After a change: update every associative dimension whose objects changed.
 /// Returns the number of dimensions updated.
 pub fn update(after: &mut Arc<Drawing>, before: &Drawing) -> usize {
@@ -326,7 +340,8 @@ pub fn update(after: &mut Arc<Drawing>, before: &Drawing) -> usize {
                     _ => None,
                 };
                 let nd = recompute(dm, prev, before, d);
-                if nd != *dm {
+                // `AsRead` values compare equal, so a dropped point reference is a change of its own.
+                if nd != *dm || read_dropped(dm, &nd) {
                     changes.push((e.handle, nd));
                 }
             }
